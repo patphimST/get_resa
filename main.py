@@ -7,8 +7,8 @@ end_date = datetime(2023, 4, 15, 23,59)
 # get_portefeuille()
 # referential_month()
 #
-# resa(start_date,end_date)
-# create_miss_month()
-# last_conso()
+resa(start_date,end_date)
+create_miss_month()
+last_conso()
 update_sheet()
 

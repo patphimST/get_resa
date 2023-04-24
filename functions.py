@@ -88,41 +88,54 @@ def resa(start_date,end_date):
     # Création de la requête d'agrégation
     pipeline = [
         {'$match': query},
-        {'$group': {
-            '_id': {
-                'id_soc': '$society._id',
-                'type': '$type',
-                'year_month': {'$dateToString': {'format': '%Y-%m', 'date': '$createdAt'}},
-                'year': {'$dateToString': {'format': '%Y', 'date': '$createdAt'}},
-                'month': {'$dateToString': {'format': '%m', 'date': '$createdAt'}}
-            },
-            'total': {'$sum': '$price.amount'}
-        }},
-        {'$sort': {'_id': 1}}
+        # {'$group': {
+        #     '_id': {
+        #         'id_soc': '$society._id',
+        #         'type': '$type',
+        #         'year_month': {'$dateToString': {'format': '%Y-%m', 'date': '$createdAt'}},
+        #         'year': {'$dateToString': {'format': '%Y', 'date': '$createdAt'}},
+        #         'month': {'$dateToString': {'format': '%m', 'date': '$createdAt'}}
+        #     },
+        #     'total': {'$sum': '$price.amount'}
+        # }},
+
+        {
+            "$group": {
+                "_id": {"society_id": "$society._id",
+                        "year_month": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
+                        "type": "$type",
+                        "year": {"$dateToString": {"format": "%Y", "date": "$createdAt"}},
+                        "month": {"$dateToString": {"format": "%m", "date": "$createdAt"}},
+
+                        },
+                "price_amount": {"$sum": "$price.amount"},  # Somme des dépenses
+                "last_resa": {"$last": {"$dateToString": {"format": "%Y-%m-%d", "date": "$createdAt"}}}
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "society_id": "$_id.society_id",
+                "type": "$_id.type",
+                "year_month": "$_id.year_month",
+                "month": "$_id.month",
+                "year": "$_id.year",
+                "price_amount": 1,
+                "last_resa": 1
+            }
+        }
     ]
 
-    # Exécution de la requête d'agrégation
-    results = list(col_it.aggregate(pipeline))
-
-    print("     ~ In progress - Stock Items in DF")
-
-    # Création d'un DataFrame Pandas pour stocker les résultats
-    df = pd.DataFrame(columns=['society_id', 'type', 'month','year','year_month','price_amount'])
-
-    # Parcours des résultats et remplissage du DataFrame
-    for result in results:
-        id_soc = result['_id']['id_soc']
-        item_type = result['_id']['type']
-        year_month = result['_id']['year_month']
-        month = result['_id']['month']
-        year = result['_id']['year']
-        total = result['total']
-        df = df._append({'society_id': id_soc, 'type': item_type, 'month': month,'year':year, 'year_month': year_month, 'price_amount': total},
-                       ignore_index=True)
-    # Affichage du DataFrame
+    # Exécution de la requête et stockage des résultats dans un dataframe
+    resultats = list(col_it.aggregate(pipeline))
+    df = pd.DataFrame(resultats)
+    #
+    nouvel_ordre_colonnes = ['society_id','type','price_amount','last_resa','year_month','year','month']
+    #
+    df = df.loc[:, nouvel_ordre_colonnes]
     df.to_csv(f'results/extract_conso.csv')
 
-    # ### On recupère la liste des entreprises dans la base et on compare à la conso
+    ### On recupère la liste des entreprises dans la base et on compare à la conso
     print("     ~ In progress - Get data in Societies")
 
     cursor_soc = col_soc.find({})
@@ -171,13 +184,13 @@ def create_miss_month():
     df_conso['Inactif'] = l_act
     print("     ~ Keep Active")
     df_conso = df_conso[df_conso['Inactif'] != "Oui"]
-    df_conso = df_conso[["society_id",'name_org', "type", "month", "year", "year_month", "price_amount", "Inactif"]]
+    df_conso = df_conso[["society_id",'name_org', "type", "month", "year", "year_month",'last_resa',"price_amount", "Inactif"]]
     df_conso.to_csv(f'results/extract_conso_type.csv')
 
     print("     ~ Fill 0 if month empty")
     df_conso = pd.merge(df_ref, df_conso, on=['society_id','name_org','year_month'], how='outer')
     df_conso = df_conso.fillna(0)
-    df_conso = df_conso[['society_id', 'name_org','month_x', 'year_x', 'year_month', 'price_amount','Inactif']]
+    df_conso = df_conso[['society_id', 'name_org','month_x', 'year_x', 'year_month', 'last_resa','price_amount','Inactif']]
     df_conso = df_conso.rename(columns={'month_x': 'month', 'year_x': 'year'})
 
     print("     ~ Get AW")
@@ -196,42 +209,36 @@ def create_miss_month():
 def last_conso():
     print("** Start : Get Last month resa")
 
-    df_conso = pd.read_csv('results/reel_conso.csv')
+    df_reel = pd.read_csv('results/reel_conso.csv')
+    # convertir la colonne 'date_commande' en un objet datetime
+    df_reel = df_reel[df_reel['price_amount'] !=0].reset_index()
+    df_reel['last_resa'] = pd.to_datetime(df_reel['last_resa'])
+    print(df_reel.head())
+    # grouper les données par société et appliquer la fonction max() à la colonne 'date_commande'
+    derniere_commande = df_reel.groupby('society_id')['last_resa'].agg('max').reset_index()
+    derniere_commande.to_csv(f'results/last_conso.csv')
 
-    print("     ~ Ignore conso = 0")
-    grouped = df_conso.groupby('society_id')
-    def last_non_zero_month(group):
-        non_zero_mask = (group['price_amount'] != 0)
-        if non_zero_mask.any():
-            last_non_zero_index = non_zero_mask[::-1].idxmax()
-            last_non_zero_row = group.loc[last_non_zero_index]
-            return last_non_zero_row['year_month']
-        else:
-            return pd.NaT
-
-    # Appliquer la fonction pour chaque groupe et concaténer les résultats
-    last_months = grouped.apply(last_non_zero_month).reset_index(name='last_conso_month')
     print("     ~ Stock results")
-
+    #
     import datetime
-    # Créer une variable contenant le mois actuel
+    # # # Créer une variable contenant le mois actuel
     now = datetime.datetime.now()
-    current_month = now.strftime('%Y-%m')
-    last_months['diff_month'] = (pd.to_datetime(current_month) - pd.to_datetime(last_months['last_conso_month'])).dt.days // 30
-    # last_months.to_csv(f'results/last_conso.csv')
+    current_month = now.strftime('%Y-%m-%d')
+    derniere_commande['last_resa_indays'] = (pd.to_datetime(current_month) - pd.to_datetime(derniere_commande['last_resa']))
+    derniere_commande.to_csv(f'results/last_conso.csv')
 
     print("     ~ Merge last_conso with df_conso")
     l_last, l_diff = [],[]
-    for i in range(len(df_conso)):
-        id_soc = df_conso['society_id'][i]
-        s_last = last_months.loc[last_months['society_id'] == id_soc, 'last_conso_month'].values[0]
+    for i in range(len(df_reel)):
+        id_soc = df_reel['society_id'][i]
+        s_last = derniere_commande.loc[derniere_commande['society_id'] == id_soc, 'last_resa'].values[0]
         l_last.append(s_last)
-        s_diff = last_months.loc[last_months['society_id'] == id_soc, "diff_month"].values[0]
+        s_diff = derniere_commande.loc[derniere_commande['society_id'] == id_soc, "last_resa_indays"].values[0]
         l_diff.append(s_diff)
-    df_conso['last_conso_month'] = l_last
-    df_conso['diff_month'] = l_diff
-    df_conso = df_conso.groupby(['society_id','name_org','Inactif','month','year','year_month','last_conso_month',"diff_month",'AW annuel']).sum()
-    df_conso.to_csv(f'results/reel_conso.csv')
+    df_reel['last_resa'] = l_last
+    df_reel['last_resa_indays'] = l_diff
+    df_reel = df_reel.groupby(['society_id','name_org','Inactif','month','year','year_month','last_resa',"last_resa_indays",'AW annuel']).sum()
+    df_reel.to_csv(f'results/reel_conso.csv')
 
     print("** End : Get Last month resa")
 
@@ -241,18 +248,28 @@ def update_sheet():
 
     print("     ~ Update files")
 
-    df_conso = pd.read_csv("results/reel_conso.csv",index_col=False)
+    df_conso = pd.read_csv("results/reel_conso.csv")
     df_soc = pd.read_csv("results/extract_soc.csv",index_col=False)
-    df_type = pd.read_csv("results/extract_conso.csv",index_col=False)
+    df_type = pd.read_csv("results/extract_conso_type.csv",index_col=False)
     df_am = pd.read_csv("results/Portefeuille AM.csv",index_col=False)
-    df_conso = df_conso.fillna(0)
-    df_conso['AW annuel'] = df_conso['AW annuel'].astype(float)
 
+    df_conso = df_conso.fillna(0)
+    df_conso['AW annuel'] = df_conso['AW annuel'].astype(str)
+    df_conso['price_amount'] = df_conso['price_amount'].astype(str)
+
+    df_conso['last_resa_indays'] = [(df_conso['last_resa_indays'][i].replace(" days","")) for i in range(len(df_conso))]
+    df_conso['price_amount'] = [(df_conso['price_amount'][i].replace(".",",")) for i in range(len(df_conso))]
+    df_conso['AW annuel'] = [(df_conso['AW annuel'][i].replace(".",",")) for i in range(len(df_conso))]
+    df_conso.to_csv("results/reel_conso.csv")
+
+    df_type['price_amount'] = df_type['price_amount'].astype(str)
+    df_type['price_amount'] = [(df_type['price_amount'][i].replace(".",",")) for i in range(len(df_type))]
+    df_type.to_csv("results/extract_conso_type.csv")
 
     from oauth2client.service_account import ServiceAccountCredentials
     import gspread
     from gspread_pandas import Spread
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file","https://www.googleapis.com/auth/drive"]
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file",'https://spreadsheets.google.com/feeds',"https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("creds/creds_sheet.json", scope)
 
     client = gspread.authorize(creds)
@@ -263,38 +280,39 @@ def update_sheet():
     s.df_to_sheet(df_soc, sheet='Info_soc', start='A1',replace=True)
     s.df_to_sheet(df_type, sheet='Conso_by_type', start='A1',replace=True)
     s.df_to_sheet(df_am, sheet='Portefeuille', start='A1',replace=True)
-
-    sheet = client.open('Conso_since_2021').worksheet('Conso_Month')
-    print("     ~ Convert column to float")
-
-    i_values = sheet.col_values(9)
-    j_values = sheet.col_values(10)
-    l_values = sheet.col_values(12)
-
-    i_float_values = [float(val) for val in i_values[1:]]
-    j_float_values = [float(val) for val in j_values[1:]]
-    l_float_values = [float(val) for val in l_values[1:]]
-
-    cell_list = sheet.range('I2:I' + str(len(i_float_values) + 1)) + sheet.range('J2:J' + str(len(j_float_values) + 1) ) + sheet.range('L2:L' + str(len(l_float_values) + 1) )
-    float_values = i_float_values + j_float_values + l_float_values
-
-    for i, cell in enumerate(cell_list):
-        cell.value = float_values[i]
-
-    sheet.update_cells(cell_list)
-    #######
-    sheet = client.open('Conso_since_2021').worksheet('Conso_by_type')
-    i_values = sheet.col_values(9)
-
-    i_float_values = [float(val) for val in i_values[1:]]
-    cell_list = sheet.range('I2:I' + str(len(i_float_values) + 1))
-    float_values =i_float_values
-
-    for i, cell in enumerate(cell_list):
-        cell.value = float_values[i]
-
-    sheet.update_cells(cell_list)
-
-    print(f"** End : Upload Google Drive")
+    #
+    # sheet = client.open('Conso_since_2021').worksheet('Conso_Month')
+    # print("     ~ Convert column to float")
+    #
+    #
+    # j_values = sheet.col_values(10)
+    # m_values = sheet.col_values(13)
+    #
+    # j_float_values = [float(val) for val in j_values[1:]]
+    # m_float_values = [float(val) for val in m_values[1:]]
+    #
+    #
+    # cell_list = sheet.range('J2:J' + str(len(j_float_values) + 1) ) + sheet.range('M2:M' + str(len(m_float_values) + 1) )
+    # float_values = j_float_values + m_float_values
+    #
+    # for i, cell in enumerate(cell_list):
+    #     cell.value = float_values[i]
+    #
+    #
+    # sheet.update_cells(cell_list)
+    # # #######
+    # sheet = client.open('Conso_since_2021').worksheet('Conso_by_type')
+    # j_values = sheet.col_values(10)
+    #
+    # j_float_values = [float(val) for val in j_values[1:]]
+    # cell_list = sheet.range('J2:J' + str(len(j_float_values) + 1))
+    # float_values =j_float_values
+    #
+    # for i, cell in enumerate(cell_list):
+    #     cell.value = float_values[i]
+    #
+    # sheet.update_cells(cell_list)
+    #
+    # print(f"** End : Upload Google Drive")
 
     ###########
