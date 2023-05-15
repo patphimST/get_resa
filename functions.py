@@ -2,11 +2,13 @@ import pandas as pd
 from pymongo import MongoClient
 import config
 from datetime import datetime
+from bson.objectid import ObjectId
 
 client = MongoClient(f'mongodb+srv://{config.mongo_pat}')
 db = client['legacy-api-management']
 col_soc = db["societies"]
 col_it = db["items"]
+col_bills = db["bills"]
 
 
 def get_portefeuille():
@@ -45,7 +47,7 @@ def referential_month():
 
 
     import datetime
-    debut_annee = datetime.date(2021, 1, 1)
+    debut_annee = datetime.date(2021, 10, 1)
     fin_annee = datetime.date.today().replace(day=1)
     mois_annee = [(mois.year, mois.month, f"{mois.year}-{mois.month:02d}") for mois in
                   pd.date_range(debut_annee, fin_annee, freq="MS")]
@@ -74,68 +76,71 @@ def referential_month():
 
     print("** End : Create referential")
 
-def resa(start_date,end_date):
-    print("* Start - Get Data from DataBase Mongo")
-
-    # Création de la requête de recherche
-    query = {
-        'createdAt': {
-            '$gte': start_date,
-            '$lte': end_date
-        }
-    }
-
-    # Création de la requête d'agrégation
+def unique_search(start_date,end_date):
     pipeline = [
-        {'$match': query},
-        # {'$group': {
-        #     '_id': {
-        #         'id_soc': '$society._id',
-        #         'type': '$type',
-        #         'year_month': {'$dateToString': {'format': '%Y-%m', 'date': '$createdAt'}},
-        #         'year': {'$dateToString': {'format': '%Y', 'date': '$createdAt'}},
-        #         'month': {'$dateToString': {'format': '%m', 'date': '$createdAt'}}
-        #     },
-        #     'total': {'$sum': '$price.amount'}
-        # }},
-
+        {
+            "$match": {
+                "createdAt": {"$gte": start_date},
+                "type": {"$in": ["receipt", "unitary", "credit", "fees"]},
+                "status": "paid",
+            }
+        },
         {
             "$group": {
-                "_id": {"society_id": "$society._id",
-                        "year_month": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
-                        "type": "$type",
+                "_id": {
+                    "society_id": "$societyId",
+                    # "billingId": "$billingId",
+                    "year_month": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
                         "year": {"$dateToString": {"format": "%Y", "date": "$createdAt"}},
                         "month": {"$dateToString": {"format": "%m", "date": "$createdAt"}},
 
-                        },
-                "price_amount": {"$sum": "$price.amount"},  # Somme des dépenses
+                },
+                "price_amount": {"$sum": "$price.amount"},
+                # "billingId": {"$first": "$billingId"},
+                # "itemId": {"$first": "$lines.itemId"},
+                # "itemId_type": {"$first": "$lines.type"},
+                "society_id": {"$first": "$societyId"},
                 "last_resa": {"$last": {"$dateToString": {"format": "%Y-%m-%d", "date": "$createdAt"}}}
+
             }
         },
         {
             "$project": {
                 "_id": 0,
-                "society_id": "$_id.society_id",
-                "type": "$_id.type",
-                "year_month": "$_id.year_month",
+                "society_id": 1,
+                # "billingId": 1,
+                # "itemId": 1,
+                # "itemId_type": 1,
+                "price_amount": 1,
+                "year_month" : "$_id.year_month",
                 "month": "$_id.month",
                 "year": "$_id.year",
-                "price_amount": 1,
                 "last_resa": 1
             }
-        }
+        },
     ]
 
-    # Exécution de la requête et stockage des résultats dans un dataframe
-    resultats = list(col_it.aggregate(pipeline))
-    df = pd.DataFrame(resultats)
-    #
-    nouvel_ordre_colonnes = ['society_id','type','price_amount','last_resa','year_month','year','month']
-    #
-    df = df.loc[:, nouvel_ordre_colonnes]
-    df.to_csv(f'results/extract_conso.csv')
+    result = col_bills.aggregate(pipeline)
+    result_list = list(result)
+    df = pd.DataFrame(result_list)
+    df.to_excel("res.xlsx")
+    df.to_csv("res.csv")
 
-    ### On recupère la liste des entreprises dans la base et on compare à la conso
+    df_am = pd.read_csv('results/Portefeuille AM.csv')
+
+    l_s = []
+    for i in range(len(df)):
+        soc_id = df['society_id'][i]
+        s = df_am.loc[df_am['society_id'] == soc_id, "name_org"].values[0]
+        l_s.append(s)
+    df['name_org'] = l_s
+    df = df.sort_values(by=['name_org','year_month'])
+    df.to_csv("results/res.csv")
+    print("fichier res.csv crée")
+
+def societies():
+    print("* Start - Get Data from DataBase Mongo")
+
     print("     ~ In progress - Get data in Societies")
 
     cursor_soc = col_soc.find({})
@@ -161,12 +166,12 @@ def resa(start_date,end_date):
     df_org['name_org'] = df_org['name_org'].replace('+Simple', 'Plus Simple')
 
     df_org.to_csv(f'results/extract_soc.csv')
-    print("* End - Get Data from DataBase Mongo")
+    print("* End - Creation du fichier extract_soc")
 
 def create_miss_month():
     print("** Start : Merge conso with referential & portefeuille")
 
-    df_conso = pd.read_csv(f'results/extract_conso.csv')
+    df_conso = pd.read_csv(f'results/res.csv')
     df_ref = pd.read_csv('referentiel_month_2021.csv')
     df_am = pd.read_csv('results/Portefeuille AM.csv')
 
@@ -182,10 +187,6 @@ def create_miss_month():
         l_name.append(s_name)
     df_conso['name_org'] = l_name
     df_conso['Inactif'] = l_act
-    print("     ~ Keep Active")
-    df_conso = df_conso[df_conso['Inactif'] != "Oui"]
-    df_conso = df_conso[["society_id",'name_org', "type", "month", "year", "year_month",'last_resa',"price_amount", "Inactif"]]
-    df_conso.to_csv(f'results/extract_conso_type.csv')
 
     print("     ~ Fill 0 if month empty")
     df_conso = pd.merge(df_ref, df_conso, on=['society_id','name_org','year_month'], how='outer')
@@ -203,31 +204,26 @@ def create_miss_month():
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(str).str.replace(' ', '')
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(float)
 
-    print("** End : Merge conso with referential & portefeuille")
-    df_conso.to_csv('results/reel_conso.csv')
+    print("* End - Creation du fichier extract_conso avec les mois à 0 si vide")
+    df_conso.to_csv('results/extract_conso.csv')
 
 def last_conso():
     print("** Start : Get Last month resa")
 
-    df_reel = pd.read_csv('results/reel_conso.csv')
-    # convertir la colonne 'date_commande' en un objet datetime
-    df_reel = df_reel[df_reel['price_amount'] !=0].reset_index()
+    df_reel = pd.read_csv('results/extract_conso.csv')
+    df_reel['last_resa'] = df_reel['last_resa'].replace("0","1900-01-01")
+    # df_reel = df_reel[df_reel['last_resa'] != '0'].reset_index()
     df_reel['last_resa'] = pd.to_datetime(df_reel['last_resa'])
-    print(df_reel.head())
-    # grouper les données par société et appliquer la fonction max() à la colonne 'date_commande'
     derniere_commande = df_reel.groupby('society_id')['last_resa'].agg('max').reset_index()
-    derniere_commande.to_csv(f'results/last_conso.csv')
-
-    print("     ~ Stock results")
-    #
     import datetime
-    # # # Créer une variable contenant le mois actuel
     now = datetime.datetime.now()
     current_month = now.strftime('%Y-%m-%d')
     derniere_commande['last_resa_indays'] = (pd.to_datetime(current_month) - pd.to_datetime(derniere_commande['last_resa']))
-    derniere_commande.to_csv(f'results/last_conso.csv')
 
     print("     ~ Merge last_conso with df_conso")
+    df_reel = df_reel.fillna(0)
+
+    df_reel = df_reel.groupby(['society_id','name_org',"month",'year','year_month','Inactif','AW annuel']).sum(numeric_only = True).reset_index()
     l_last, l_diff = [],[]
     for i in range(len(df_reel)):
         id_soc = df_reel['society_id'][i]
@@ -237,11 +233,11 @@ def last_conso():
         l_diff.append(s_diff)
     df_reel['last_resa'] = l_last
     df_reel['last_resa_indays'] = l_diff
-    df_reel = df_reel.groupby(['society_id','name_org','Inactif','month','year','year_month','last_resa',"last_resa_indays",'AW annuel']).sum()
+    df_reel = df_reel.sort_values(by=['name_org','year_month'])
+
     df_reel.to_csv(f'results/reel_conso.csv')
 
-    print("** End : Get Last month resa")
-
+    print("* End - Creation du fichier reel_conso avec le merge de last_conso")
 
 def update_sheet():
     print(f"** Start : Upload Google Drive")
@@ -250,21 +246,28 @@ def update_sheet():
 
     df_conso = pd.read_csv("results/reel_conso.csv")
     df_soc = pd.read_csv("results/extract_soc.csv",index_col=False)
-    df_type = pd.read_csv("results/extract_conso_type.csv",index_col=False)
     df_am = pd.read_csv("results/Portefeuille AM.csv",index_col=False)
 
-    df_conso = df_conso.fillna(0)
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(str)
     df_conso['price_amount'] = df_conso['price_amount'].astype(str)
+    df_conso['price_amount'] = [(df_conso['price_amount'][i].replace(".", ",")) for i in range(len(df_conso))]
+    df_conso['AW annuel'] = [(df_conso['AW annuel'][i].replace(".", ",")) for i in range(len(df_conso))]
 
+    df_reel = df_conso.fillna(0)
+    l_inac = []
+    for v in range(len(df_reel)):
+        id_soc = (df_reel['society_id'][v])
+        s = df_am.loc[df_am['society_id'] == id_soc,"Inactif"].values[0]
+        l_inac.append(s)
+    df_conso['Inactif'] = l_inac
+    # df_conso = df_conso[(df_conso['Inactif'] == "Non")|(df_conso['Inactif'] == 0)].reset_index()
+
+    df_conso['AW annuel'] = df_conso['AW annuel'].astype(str)
+    df_conso['price_amount'] = df_conso['price_amount'].astype(str)
     df_conso['last_resa_indays'] = [(df_conso['last_resa_indays'][i].replace(" days","")) for i in range(len(df_conso))]
     df_conso['price_amount'] = [(df_conso['price_amount'][i].replace(".",",")) for i in range(len(df_conso))]
     df_conso['AW annuel'] = [(df_conso['AW annuel'][i].replace(".",",")) for i in range(len(df_conso))]
     df_conso.to_csv("results/reel_conso.csv")
-
-    df_type['price_amount'] = df_type['price_amount'].astype(str)
-    df_type['price_amount'] = [(df_type['price_amount'][i].replace(".",",")) for i in range(len(df_type))]
-    df_type.to_csv("results/extract_conso_type.csv")
 
     from oauth2client.service_account import ServiceAccountCredentials
     import gspread
@@ -274,45 +277,81 @@ def update_sheet():
 
     client = gspread.authorize(creds)
 
-    # gspread_pandas pour ajouter le df dans le sheet
     s = Spread('Conso_since_2021')
-    s.df_to_sheet(df_conso, sheet='Conso_Month', start='A1',replace=True)
     s.df_to_sheet(df_soc, sheet='Info_soc', start='A1',replace=True)
-    s.df_to_sheet(df_type, sheet='Conso_by_type', start='A1',replace=True)
     s.df_to_sheet(df_am, sheet='Portefeuille', start='A1',replace=True)
-    #
-    # sheet = client.open('Conso_since_2021').worksheet('Conso_Month')
-    # print("     ~ Convert column to float")
-    #
-    #
-    # j_values = sheet.col_values(10)
-    # m_values = sheet.col_values(13)
-    #
-    # j_float_values = [float(val) for val in j_values[1:]]
-    # m_float_values = [float(val) for val in m_values[1:]]
-    #
-    #
-    # cell_list = sheet.range('J2:J' + str(len(j_float_values) + 1) ) + sheet.range('M2:M' + str(len(m_float_values) + 1) )
-    # float_values = j_float_values + m_float_values
-    #
-    # for i, cell in enumerate(cell_list):
-    #     cell.value = float_values[i]
-    #
-    #
-    # sheet.update_cells(cell_list)
-    # # #######
-    # sheet = client.open('Conso_since_2021').worksheet('Conso_by_type')
-    # j_values = sheet.col_values(10)
-    #
-    # j_float_values = [float(val) for val in j_values[1:]]
-    # cell_list = sheet.range('J2:J' + str(len(j_float_values) + 1))
-    # float_values =j_float_values
-    #
-    # for i, cell in enumerate(cell_list):
-    #     cell.value = float_values[i]
-    #
-    # sheet.update_cells(cell_list)
-    #
-    # print(f"** End : Upload Google Drive")
+    s.df_to_sheet(df_conso, index=False, sheet='Conso_Month', start='A1', replace=True)
 
-    ###########
+def notif():
+    df = pd.read_csv("results/reel_conso.csv")
+    print(len(df))
+    df_20_50 = df[(df['last_resa_indays'] >= 20) & (df['last_resa_indays'] <= 49) & (df['Inactif'] == "Non") ]
+    df_20_50 = df_20_50.drop_duplicates(subset="society_id").sort_values(by='last_resa_indays',ascending=False).reset_index()
+    df_20_50 = df_20_50[['society_id','name_org','month','year','year_month','Inactif','AW annuel','price_amount','last_resa','last_resa_indays']]
+    len_df_20_50 = (len(df_20_50))
+    df_p50 = df[(df['last_resa_indays'] > 50) & (df['Inactif'] == "Non") ]
+    df_p50 = df_p50.drop_duplicates(subset="society_id").sort_values(by='last_resa_indays',ascending=False).reset_index()
+    df_p50 = df_p50[['society_id','name_org','month','year','year_month','Inactif','AW annuel','price_amount','last_resa','last_resa_indays']]
+    len_df_p50 = (len(df_p50))
+
+    df['year_month'] = pd.to_datetime(df['year_month'], format='%Y-%m')
+    filtered_df = df[(df['year_month'] > pd.to_datetime('2022-9', format='%Y-%m')) & (df['Inactif'] == "Non")].reset_index()
+
+    filtered_df['price_amount'] = filtered_df['price_amount'].str.replace(',', '.').astype(float)
+
+    df_group = filtered_df.groupby(["society_id","name_org",'last_resa_indays','AW annuel']).sum(numeric_only=True).reset_index()
+    df_group['AW annuel'] = df_group['AW annuel'].str.replace(',', '.').astype(float)
+
+    df_group['ticketVSAW'] = (df_group['price_amount']/df_group['AW annuel']*100).round(2)
+    print(len(df_group))
+
+    df_group = df_group[df_group['ticketVSAW'] < 50]
+    len_tickAw_m50 = (len(df_group))
+    df_group.to_csv("res.csv")
+
+    # import requests
+    # import json
+    # webhook_url = config.webhook_discord
+    #
+    # message_content = f"⚠️WARNING ACCOUNT ⚠️   " \
+    #                   f"{len_df_20_50} comptes n'ont pas réservé depuis [20-50] jours " \
+    #                   f"{len_df_p50} comptes n'ont pas réservé depuis plus de 50 jours. " \
+    #                   f"{len_tickAw_m50} comptes ont -50% de ticketé vs awardé. " \
+    #                   f"Checkez le dashboard"
+    #
+    #
+    # data = {
+    #     "content": message_content,
+    #     "username" : "Bot Pat"
+    # }
+    #
+    # json_data = json.dumps(data)
+    # response = requests.post(webhook_url, data=json_data, headers={'Content-Type': 'application/json'})
+    #
+    # if response.status_code == 204:
+    #     print("Message envoyé avec succès !")
+    # else:
+    #     print("Échec de l'envoi du message :", response.status_code, response.text)
+
+def pipedrive():
+    import requests
+    import json
+
+    url = f"https://api.pipedrive.com/v1/activities?api_token={config.api_pipedrive}"
+
+    payload = json.dumps({
+        "due_date": "2023-05-16",
+        "org_id": 135504,
+        "note": "Dernière résa il y a 10 jours",
+        "subject": "❗Warning Conso❗ A contacter ASAP",
+        "type": "🌞 Point Account",
+        "user_id": 6969457 # Maud 14766484 ou Pagna 15232994
+    })
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+
+    response = requests.request("POST", url, headers=headers, data=payload)
+
+    print(response.text)
