@@ -1,6 +1,10 @@
+import time
+import json
+
 import pandas as pd
 from pymongo import MongoClient
 import config
+import requests
 from datetime import datetime
 from bson.objectid import ObjectId
 
@@ -9,6 +13,7 @@ db = client['legacy-api-management']
 col_soc = db["societies"]
 col_it = db["items"]
 col_bills = db["bills"]
+col_users = db["users"]
 
 
 def get_portefeuille():
@@ -27,11 +32,43 @@ def get_portefeuille():
     worksheet = client.open('Portefeuille AM').worksheet('DASHBOARD')
     # récupérer toutes les données de la feuille
     data = worksheet.get_all_values()
-    # écrire les données dans un fichier CSV
-    with open('results/Portefeuille AM.csv', 'w', newline='',encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerows(data)
-    print("** End : Get Data from Portefeuille")
+    df = pd.DataFrame(data[1:], columns=data[0])
+    print(len(df))
+    # with open('results/Portefeuille AM.csv', 'w', newline='',encoding='utf-8') as file:
+    #     writer = csv.writer(file)
+    #     writer.writerows(data)
+    # print("** End : Get Data from Portefeuille")
+    id_pipe = []
+    name_pipe = []
+    url = f"https://api.pipedrive.com/v1/organizations/find"
+    for i in range(len(df)):
+        org_name = df['name_org'][i].replace(" ","%")
+        print(org_name)
+
+        params = {
+            "term": org_name,
+            "api_token": config.api_pipedrive
+        }
+
+        response = requests.get(url, params=params)
+        data = response.json()
+        print(data)
+
+        if data["data"]:
+            id_pipe.append(data["data"][0]["id"])
+            name_pipe.append(data["data"][0]["name"])
+        else:
+            id_pipe.append("nc")
+            name_pipe.append("nc")
+        # time.sleep(3)
+    df['ID_IN_PIPE?'] = id_pipe
+    df['NAME_IN_PIPE?'] = name_pipe
+    print(df)
+    df.to_csv("results/Portefeuille AM.csv")
+    # with open('results/Portefeuille AM.csv', 'w', newline='',encoding='utf-8') as file:
+    #     writer = csv.writer(file)
+    #     writer.writerows(data)
+    # print("** End : Get Data from Portefeuille")
 
 def referential_month():
     print("** Start : Create referential")
@@ -76,7 +113,7 @@ def referential_month():
 
     print("** End : Create referential")
 
-def unique_search(start_date,end_date):
+def unique_search(start_date):
     pipeline = [
         {
             "$match": {
@@ -89,16 +126,12 @@ def unique_search(start_date,end_date):
             "$group": {
                 "_id": {
                     "society_id": "$societyId",
-                    # "billingId": "$billingId",
                     "year_month": {"$dateToString": {"format": "%Y-%m", "date": "$createdAt"}},
                         "year": {"$dateToString": {"format": "%Y", "date": "$createdAt"}},
                         "month": {"$dateToString": {"format": "%m", "date": "$createdAt"}},
 
                 },
                 "price_amount": {"$sum": "$price.amount"},
-                # "billingId": {"$first": "$billingId"},
-                # "itemId": {"$first": "$lines.itemId"},
-                # "itemId_type": {"$first": "$lines.type"},
                 "society_id": {"$first": "$societyId"},
                 "last_resa": {"$last": {"$dateToString": {"format": "%Y-%m-%d", "date": "$createdAt"}}}
 
@@ -108,9 +141,6 @@ def unique_search(start_date,end_date):
             "$project": {
                 "_id": 0,
                 "society_id": 1,
-                # "billingId": 1,
-                # "itemId": 1,
-                # "itemId_type": 1,
                 "price_amount": 1,
                 "year_month" : "$_id.year_month",
                 "month": "$_id.month",
@@ -131,6 +161,7 @@ def unique_search(start_date,end_date):
     l_s = []
     for i in range(len(df)):
         soc_id = df['society_id'][i]
+        print(soc_id)
         s = df_am.loc[df_am['society_id'] == soc_id, "name_org"].values[0]
         l_s.append(s)
     df['name_org'] = l_s
@@ -202,7 +233,8 @@ def create_miss_month():
         l_aw.append(s_aw)
     df_conso['AW annuel'] = l_aw
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(str).str.replace(' ', '')
-    df_conso['AW annuel'] = df_conso['AW annuel'].astype(float)
+    # df_conso['AW annuel'] = df_conso['AW annuel'].str.replace(',00', '').str.replace(' €', '')
+    # df_conso['AW annuel'] = df_conso['AW annuel'].astype(float)
 
     print("* End - Creation du fichier extract_conso avec les mois à 0 si vide")
     df_conso.to_csv('results/extract_conso.csv')
@@ -212,7 +244,6 @@ def last_conso():
 
     df_reel = pd.read_csv('results/extract_conso.csv')
     df_reel['last_resa'] = df_reel['last_resa'].replace("0","1900-01-01")
-    # df_reel = df_reel[df_reel['last_resa'] != '0'].reset_index()
     df_reel['last_resa'] = pd.to_datetime(df_reel['last_resa'])
     derniere_commande = df_reel.groupby('society_id')['last_resa'].agg('max').reset_index()
     import datetime
@@ -284,40 +315,74 @@ def update_sheet():
 
 def notif():
     df = pd.read_csv("results/reel_conso.csv")
-    print(len(df))
     df_20_50 = df[(df['last_resa_indays'] >= 20) & (df['last_resa_indays'] <= 49) & (df['Inactif'] == "Non") ]
     df_20_50 = df_20_50.drop_duplicates(subset="society_id").sort_values(by='last_resa_indays',ascending=False).reset_index()
     df_20_50 = df_20_50[['society_id','name_org','month','year','year_month','Inactif','AW annuel','price_amount','last_resa','last_resa_indays']]
     len_df_20_50 = (len(df_20_50))
-    df_p50 = df[(df['last_resa_indays'] > 50) & (df['Inactif'] == "Non") ]
+    df_20_50.to_csv('results/df_20_50.csv')
+
+    df_p50 = df[(df['last_resa_indays'] > 50) & (df['Inactif'] == "Non")]
     df_p50 = df_p50.drop_duplicates(subset="society_id").sort_values(by='last_resa_indays',ascending=False).reset_index()
     df_p50 = df_p50[['society_id','name_org','month','year','year_month','Inactif','AW annuel','price_amount','last_resa','last_resa_indays']]
     len_df_p50 = (len(df_p50))
+    df_p50.to_csv('results/df_p50.csv')
 
     df['year_month'] = pd.to_datetime(df['year_month'], format='%Y-%m')
-    filtered_df = df[(df['year_month'] > pd.to_datetime('2022-9', format='%Y-%m')) & (df['Inactif'] == "Non")].reset_index()
+    df = df.loc[(df['year_month'] > pd.to_datetime('2022-9', format='%Y-%m'))].reset_index()
+    df['price_amount'] = df['price_amount'].str.replace(',', '.').astype(float)
 
-    filtered_df['price_amount'] = filtered_df['price_amount'].str.replace(',', '.').astype(float)
+    from datetime import datetime
+    now = datetime.now()  # current date and time
+    year = now.strftime("%Y")
+    month = now.strftime("%m")
+    this_year_month = year + "-" + month
+    actif_this_month = df.loc[(df['year_month'] == this_year_month) & (df["price_amount"] != 0 ) & ((df["Inactif"] == "Non" )|(df["Inactif"] == "Ponctuel" )|(df["Inactif"] == "New" ))]
+    len_actif_this_month = (len(actif_this_month))
 
-    df_group = filtered_df.groupby(["society_id","name_org",'last_resa_indays','AW annuel']).sum(numeric_only=True).reset_index()
+
+    df_group = df.groupby(["society_id", "name_org", 'last_resa_indays', 'AW annuel','Inactif']).sum(numeric_only=True).reset_index()
     df_group['AW annuel'] = df_group['AW annuel'].str.replace(',', '.').astype(float)
+    df_group['ticketVSAW'] = (df_group['price_amount'] / df_group['AW annuel'] * 100).round(2)
+    df_group = df_group.loc[(df_group["Inactif"] == "Non" )]
 
-    df_group['ticketVSAW'] = (df_group['price_amount']/df_group['AW annuel']*100).round(2)
-    print(len(df_group))
+    nulle= df_group[(df_group['ticketVSAW'] < 10)]
+    nulle.to_csv('results/nulle.csv')
 
-    df_group = df_group[df_group['ticketVSAW'] < 50]
-    len_tickAw_m50 = (len(df_group))
-    df_group.to_csv("res.csv")
+    tres_basse= df_group[(df_group['ticketVSAW'] >= 10) & (df_group['ticketVSAW'] <= 20) ]
+    tres_basse.to_csv('results/tres_basse.csv')
 
+    basse= df_group[(df_group['ticketVSAW'] >= 20)&(df_group['ticketVSAW'] <= 35)]
+    basse.to_csv('results/basse.csv')
+
+    tres_moderee= df_group[(df_group['ticketVSAW'] >= 35)&(df_group['ticketVSAW'] < 50)]
+    moderee= df_group[(df_group['ticketVSAW'] >= 50)&(df_group['ticketVSAW'] < 80)]
+    elevee= df_group[(df_group['ticketVSAW'] >= 80) & (df_group['ticketVSAW'] < 100)]
+    tres_elevee= df_group[(df_group['ticketVSAW'] >= 80)]
+
+    len_nulle = (len(nulle))
+    len_tres_basse = (len(tres_basse))
+    len_basse = (len(basse))
+    len_moderee = (len(moderee))
+    len_elevee = (len(elevee))
+    len_tres_elevee = (len(tres_elevee))
+
+    print("ici ", len_actif_this_month,len_df_20_50,len_df_p50,len_nulle,len_tres_basse,len_basse)
     # import requests
     # import json
     # webhook_url = config.webhook_discord
     #
-    # message_content = f"⚠️WARNING ACCOUNT ⚠️   " \
-    #                   f"{len_df_20_50} comptes n'ont pas réservé depuis [20-50] jours " \
-    #                   f"{len_df_p50} comptes n'ont pas réservé depuis plus de 50 jours. " \
-    #                   f"{len_tickAw_m50} comptes ont -50% de ticketé vs awardé. " \
-    #                   f"Checkez le dashboard"
+    # message_content = f"⚠️WARNING ACCOUNT ⚠️   \n" \
+    #                   f"Ce mois-ci, {len_actif_this_month} comptes ont réservé.\n" \
+    #                   f"\n" \
+    #                   f"{len_df_20_50} comptes n'ont pas réservé depuis [20-50] jours \n" \
+    #                   f"{len_df_p50} comptes n'ont pas réservé depuis plus de 50 jours. \n" \
+    #                   f"\n" \
+    #                   f"{len_nulle} comptes ont moins de 10% de ticketé (vs awardé)\n" \
+    #                   f"{len_tres_basse} comptes ont [10-20]% de ticketé (vs awardé)\n" \
+    #                   f"{len_basse} comptes ont [20-50]% de ticketé (vs awardé)\n" \
+    #                   f"{len_moderee} comptes ont [50-80]% de ticketé (vs awardé)\n" \
+    #                   f"\n" \
+    #                   f"Checkez le dashboard et vos activités Pipedrive"
     #
     #
     # data = {
@@ -336,22 +401,247 @@ def notif():
 def pipedrive():
     import requests
     import json
-
+    df_p50 = pd.read_csv("results/df_p50.csv")
+    df_am = pd.read_csv("results/Portefeuille AM.csv")
     url = f"https://api.pipedrive.com/v1/activities?api_token={config.api_pipedrive}"
 
-    payload = json.dumps({
-        "due_date": "2023-05-16",
-        "org_id": 135504,
-        "note": "Dernière résa il y a 10 jours",
-        "subject": "❗Warning Conso❗ A contacter ASAP",
-        "type": "🌞 Point Account",
-        "user_id": 6969457 # Maud 14766484 ou Pagna 15232994
-    })
-    headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-    }
+    from datetime import datetime, timedelta
+    aujourd_hui = datetime.today()
+    jour_semaine = aujourd_hui.weekday()  # Récupère le jour de la semaine (0 pour lundi, 1 pour mardi, ..., 6 pour dimanche)
+    jours_jusqua_lundi = (0 - jour_semaine + 7) % 7  # Calcule le nombre de jours jusqu'au prochain lundi
+    prochain_lundi = aujourd_hui + timedelta(days=jours_jusqua_lundi)
+    prochain_lundi = prochain_lundi.strftime("%Y-%m-%d")
+    print(prochain_lundi)
+    l_score = []
+    l_id = []
+    l_name_org = []
+    # GET ID FROM PORTEFEUILLE AM
+    def search_org(df_am):
+        for i in range(len(df_am)):
+            name = df_am['name_org'][i]
+            url = f"https://api.pipedrive.com/v1/organizations/search?term={name}&fields=name&api_token={config.api_pipedrive}"
+            payload = {}
+            headers = {
+                'Accept': 'application/json',
+                'Cookie': '__cf_bm=DS8G3oD5wwJ1qD_vn0elvhAOVTdS9w2POhpTl31v7GQ-1684848070-0-AZENKAbLX49CCDogV+1hs1JSdVF9PnW3q1URodkUIMCTUc0V2aMXFCxh5qaYWfqXGh4YBk0ODJ1XPlUeY8N84yU='
+            }
+            response = requests.request("GET", url, headers=headers, data=payload)
+            response = response.json()
 
-    response = requests.request("POST", url, headers=headers, data=payload)
+            try:
+                l_score.append(response['data']["items"][0]['result_score'])
+                l_id.append(response['data']["items"][0]['item']['id'])
+                l_name_org.append(response['data']["items"][0]['item']['name'])
+            except:
+                l_score.append("Not in Pipe")
+                l_id.append("Not in Pipe")
+                l_name_org.append("Not in Pipe")
+        df_am['score_pipe'] = l_score
+        df_am['name_pipe'] = l_name_org
+        df_am['id_org'] = l_id
+        df_am.to_csv('results/Portefeuille AM.csv')
+    search_org(df_am)
+    # for i in range(len(df_p50)):
+    #     last_resa = df_p50['last_resa_indays'][i]
+    #     payload = json.dumps({
+    #         "due_date": f"{prochain_lundi}",
+    #         "org_id": 135504,
+    #         "note": f"A contacter ASAP",
+    #         "subject": f" ⚠️Warning Conso ⚠️La dernière résa remonte à {last_resa} jours",
+    #         "type": "🌞 Point Account",
+    #         "user_id": 6969457 # Maud 14766484 ou Pagna 15232994
+    #     })
+    #     headers = {
+    #         'Content-Type': 'application/json',
+    #         'Accept': 'application/json',
+    #     }
+    #
+    #     response = requests.request("POST", url, headers=headers, data=payload)
+    #
+    #     print(response.text)
 
-    print(response.text)
+def get_executive():
+
+    executives = col_soc.find({"members.roles": "executive"})
+
+    l_name = []
+    l_id = []
+    l_user = []
+    l_postal = []
+    l_city = []
+    l_role = []
+
+    for society in executives:
+        for member in society["members"]:
+            if "executive" in member["roles"]:
+                l_user.append(member["user"])
+                l_role.append(member["roles"])
+                l_name.append(society["name"])
+                l_id.append(society["_id"])
+                l_city.append(society['address']['city'])
+                try:
+                    l_postal.append(society['address']['postal_code'])
+                except:
+                    l_postal.append("")
+    df = pd.DataFrame(list(zip(l_id,l_name,l_city,l_postal,l_user,l_role)), columns=['society_id','name_org','city','postal','id_user','role']).sort_values(by='name_org')
+    df = df[(df['name_org'] != "Supertripper")&(df['name_org'] != "supertripper")&(df['name_org'] != "perso")&(df['name_org'] != "Gabin ADMIN")]
+    df = df.reset_index(drop=True)
+    df.to_csv("exec.csv")
+    df = pd.read_csv("exec.csv")
+
+    l_firstname = []
+    l_lastname = []
+    l_email = []
+    l_phone = []
+    l_count = []
+    l_username = []
+    for d in range(len(df)):
+        id_user = df['id_user'][d]
+        count_info_user = col_users.count_documents({"_id": ObjectId(id_user)})
+        l_count.append(count_info_user)
+    df['count'] = l_count
+
+    df = df[df['count'] != 0].reset_index()
+    df.to_csv("exec.csv")
+
+    for d in range(len(df)):
+        id_user = df['id_user'][d]
+        info_user = col_users.find({"_id": ObjectId(id_user)})
+        for info in info_user:
+            l_firstname.append(info['firstname'])
+            l_lastname.append(info['lastname'])
+            l_username.append(info['username'])
+            l_email.append(info['email'])
+            try:
+                l_phone.append(info['phone'])
+            except:
+                l_phone.append("")
+    df['username']=l_username
+    df['firstname']=l_firstname
+    df['lastname']=l_lastname
+    df['email']=l_email
+    df['phone']=l_phone
+
+    df.to_csv(fr"C:\Users\Patrick\PycharmProjects\get_resa\resa3.csv")
+
+def all_items():
+
+
+    df_confirmed = pd.read_csv("activa.csv",delimiter=";")
+    df_confirmed = df_confirmed.fillna("null")
+    l_amount = []
+    l_name = []
+    l_startDate = []
+    for c in range(len(df_confirmed)):
+        id_car = (df_confirmed["itemId"][c])
+        print(id_car)
+        filter = {
+                'society._id': ObjectId('5e5d320ff2f2ef001043b6a2'),
+                'id': id_car
+            }
+        result = client['legacy-api-management']['items'].find(filter=filter)
+        result_count = client['legacy-api-management']['items'].count_documents(filter=filter)
+
+        if result_count == 1:
+            for r in result:
+                # l_amount.append(r['amount'])
+                # l_startDate.append(r['startDate'])
+                # l_name.append(r['name'])
+                # print(r['amount'])
+                l_amount.append(r['status'])
+        else:
+            l_amount.append("")
+            # l_name.append("")
+            # l_startDate.append("")
+
+    # df_confirmed['startDate'] = l_startDate
+    # df_confirmed['name'] = l_name
+    df_confirmed['status'] = l_amount
+    df_confirmed.to_csv('activass.csv')
+
+def get_last_resa():
+    import pymongo
+    import pandas as pd
+
+    pipeline = [
+        {
+            "$sort": {"createdAt": -1}
+        },
+        {
+            "$group": {
+                "_id": "$society._id",
+                "latestCreatedAt": {"$first": "$createdAt"}
+            }
+        }
+    ]
+    results = list(col_it.aggregate(pipeline))
+
+    df = pd.DataFrame(results)
+    df.columns = ['society_id', 'latest_reservation_date']
+    df.to_csv('results/last_resa.csv')
+
+def update_last_resa_pipe():
+    df = pd.read_csv('results/last_resa2.csv')
+    import requests
+    l_id_pipe,l_warning = [],[]
+
+    ## GET ID PIPE
+    for i in range(len(df)):
+        society_id = df['society_id'][i]
+        url = f"https://api.pipedrive.com/v1/itemSearch/field?term={society_id}&field_type=organizationField&exact_match=false&field_key=9d0760fac9b60ea2d3f590d3146d758735f2896d&return_item_ids=true&api_token={config.api_pipedrive}"
+        payload = {}
+        headers = {}
+        response = requests.request("GET", url, headers=headers, data=payload).json()
+        time.sleep(0.3)
+        try:
+            id_pipe = (response['data'][0]['id'])
+        except:
+            id_pipe = ""
+        print(society_id,id_pipe)
+        l_id_pipe.append(id_pipe)
+
+    df['id_pipe'] = l_id_pipe
+
+    ## DELTA RESA VS TODAY
+    df = df[df['id_pipe'] > 0 ]
+
+    date_du_jour = datetime.today().date()
+
+    for i in range(len(df)):
+        id_pipe = int(df['id_pipe'][i])
+        autre_date = (df['latest_reservation_date'][i])
+        format_str = "%Y-%m-%d %H:%M:%S.%f"
+        autre_date = datetime.strptime(autre_date, format_str)
+        autre_date = datetime.date(autre_date)
+        difference_en_jours = (date_du_jour - autre_date).days
+        l_warning.append(difference_en_jours)
+        print(id_pipe)
+
+        ## MAJ FIELD
+        url = f"https://api.pipedrive.com/v1/organizations/{id_pipe}?api_token={config.api_pipedrive}"
+
+        autre_date_str = autre_date.strftime(format_str)[:10]
+        date_du_jour_str = date_du_jour.strftime(format_str)[:10]
+        print(autre_date_str,date_du_jour_str,difference_en_jours)
+
+        payload = json.dumps({
+            "85a8edbe18b18e20a154af934fcadecfa83cc844": difference_en_jours,
+            "e90d8b192b7cb46e84bb21ec7d9a9dfb2e4b4b54": date_du_jour_str,
+            "c38c542419257bc687d5cf9393622b22b21788db": autre_date_str
+        })
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Cookie': '__cf_bm=9.Hut1jttNLxgvIF4ymsM0cPiM7WJINulQ7KFHWbCrk-1691657460-0-AXRya1f4MbN3X3EmKhUl/PhTge6ufUuOW+FM2+w+zmR5MV67fnsTBnNJXLI4Oi7JxTXfVhGDL6zXrJTqDuJtko8='
+        }
+
+        response = requests.request("PUT", url, headers=headers, data=payload)
+
+        print(response.text)
+
+        ## Créer une activité sur last resa supérieur à 20 jours
+        ## Créer une activité sur awardé à la traine
+
+    df['warning_conso2'] = l_warning
+    df.to_csv('results/last_resa2.csv')
