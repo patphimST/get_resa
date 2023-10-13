@@ -17,58 +17,38 @@ col_users = db["users"]
 
 
 def get_portefeuille():
-    print("** Start : Get Data from Portefeuille")
+    import requests
 
-    import gspread
-    import csv
-    from oauth2client.service_account import ServiceAccountCredentials
+    # Remplacez ces valeurs par vos propres informations d'authentification Pipedrive
+    FILTER_ID = 1289
 
-    # définir les informations d'identification pour accéder au fichier Google Sheets
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name('creds/creds_sheet.json', scope)
-    client = gspread.authorize(creds)
+    url = f"https://api.pipedrive.com/v1/organizations?filter_id={FILTER_ID}&limit=200&api_token={config.api_pipedrive}"
 
-    # ouvrir le fichier et la feuille spécifique que vous souhaitez exporter
-    worksheet = client.open('Portefeuille AM').worksheet('DASHBOARD')
-    # récupérer toutes les données de la feuille
-    data = worksheet.get_all_values()
-    df = pd.DataFrame(data[1:], columns=data[0])
-    print(len(df))
-    # with open('results/Portefeuille AM.csv', 'w', newline='',encoding='utf-8') as file:
-    #     writer = csv.writer(file)
-    #     writer.writerows(data)
-    # print("** End : Get Data from Portefeuille")
-    id_pipe = []
-    name_pipe = []
-    url = f"https://api.pipedrive.com/v1/organizations/find"
-    for i in range(len(df)):
-        org_name = df['name_org'][i].replace(" ","%")
-        print(org_name)
+    payload = {}
+    headers = {
+        'Accept': 'application/json',
+        'Cookie': '__cf_bm=epS6IiqbeFLh_ZfXxyo.l824MgGVUnpX._S9_Ntj1KA-1693828120-0-AQzPhvtpyCNHrbv5xvIoWIigXcIjKapnnyOvpRQvT2AYGIPIxxr1Yj2+pOp9aj77yICnSx0589w/ZDQX4syB9NU='
+    }
 
-        params = {
-            "term": org_name,
-            "api_token": config.api_pipedrive
-        }
+    response = requests.request("GET", url, headers=headers, data=payload)
 
-        response = requests.get(url, params=params)
-        data = response.json()
-        print(data)
-
-        if data["data"]:
-            id_pipe.append(data["data"][0]["id"])
-            name_pipe.append(data["data"][0]["name"])
-        else:
-            id_pipe.append("nc")
-            name_pipe.append("nc")
-        # time.sleep(3)
-    df['ID_IN_PIPE?'] = id_pipe
-    df['NAME_IN_PIPE?'] = name_pipe
-    print(df)
+    response = (response.json()['data'])
+    l_society_id= []
+    l_name= []
+    l_owner= []
+    l_awarde= []
+    for i in response:
+        print(i)
+        id_soc = (i['9d0760fac9b60ea2d3f590d3146d758735f2896d'])
+        awarde = (i['446585f9020fe3190ca0fa5ef53fc429ef4b4441'])
+        owner = (i['owner_id']['name'])
+        name = (i['name'])
+        l_society_id.append(id_soc)
+        l_name.append(name)
+        l_awarde.append(awarde)
+        l_owner.append(owner)
+    df = pd.DataFrame({'society_id': l_society_id, 'name_org': l_name,'awarde': l_awarde,'owner': l_owner,})
     df.to_csv("results/Portefeuille AM.csv")
-    # with open('results/Portefeuille AM.csv', 'w', newline='',encoding='utf-8') as file:
-    #     writer = csv.writer(file)
-    #     writer.writerows(data)
-    # print("** End : Get Data from Portefeuille")
 
 def referential_month():
     print("** Start : Create referential")
@@ -76,12 +56,12 @@ def referential_month():
 
     # Créer un DataFrame avec toutes les combinaisons de mois et de sociétés.
     df_am = pd.read_csv(f'results/Portefeuille AM.csv')
-
+    df_am = df_am.fillna(0)
+    df_am = df_am[df_am['society_id'] != 0].reset_index()
     print("     ~ Get id_soc unique in df_aw")
     societes = []
     for i in range(len(df_am)):
         societes.append(df_am['society_id'][i])
-
 
     import datetime
     debut_annee = datetime.date(2021, 10, 1)
@@ -105,7 +85,10 @@ def referential_month():
     l_name = []
     for i in range(len(df)):
         id_soc = df['society_id'][i]
-        s_name = df_am.loc[df_am['society_id'] == id_soc, "name_org"].values[0]
+        try:
+            s_name = df_am.loc[df_am['society_id'] == id_soc, "name_org"].values[0]
+        except:
+            s_name = ""
         l_name.append(s_name)
     df['name_org'] = l_name
 
@@ -157,12 +140,20 @@ def unique_search(start_date):
     df.to_csv("res.csv")
 
     df_am = pd.read_csv('results/Portefeuille AM.csv')
+    df_am = df_am.fillna(0)
+    df_am = df_am[df_am['society_id'] != 0].reset_index()
 
+    df = df.fillna(0)
+    df = df[df['society_id'] != 0].reset_index()
+    
     l_s = []
     for i in range(len(df)):
         soc_id = df['society_id'][i]
         print(soc_id)
-        s = df_am.loc[df_am['society_id'] == soc_id, "name_org"].values[0]
+        try :
+            s = df_am.loc[df_am['society_id'] == soc_id, "name_org"].values[0]
+        except:
+            s = 0
         l_s.append(s)
     df['name_org'] = l_s
     df = df.sort_values(by=['name_org','year_month'])
@@ -205,31 +196,38 @@ def create_miss_month():
     df_conso = pd.read_csv(f'results/res.csv')
     df_ref = pd.read_csv('referentiel_month_2021.csv')
     df_am = pd.read_csv('results/Portefeuille AM.csv')
-
+    df_conso = df_conso.fillna(0)
+    df_conso = df_conso[df_conso['society_id'] != 0].reset_index()
     print("     ~ Get active info & name_org")
     l_act = []
     l_name = []
 
     for i in range(len(df_conso)):
         id_soc = df_conso['society_id'][i]
-        s_active = df_am.loc[df_am['society_id'] == id_soc,'Inactif'].values[0]
-        l_act.append(s_active)
-        s_name = df_am.loc[df_am['society_id'] == id_soc,"name_org"].values[0]
+        # s_active = df_am.loc[df_am['society_id'] == id_soc,'Inactif'].values[0]
+        # l_act.append(s_active)
+        try:
+            s_name = df_am.loc[df_am['society_id'] == id_soc,"name_org"].values[0]
+        except:
+            s_name = ""
         l_name.append(s_name)
     df_conso['name_org'] = l_name
-    df_conso['Inactif'] = l_act
+    # df_conso['Inactif'] = l_act
 
     print("     ~ Fill 0 if month empty")
     df_conso = pd.merge(df_ref, df_conso, on=['society_id','name_org','year_month'], how='outer')
     df_conso = df_conso.fillna(0)
-    df_conso = df_conso[['society_id', 'name_org','month_x', 'year_x', 'year_month', 'last_resa','price_amount','Inactif']]
+    df_conso = df_conso[['society_id', 'name_org','month_x', 'year_x', 'year_month', 'last_resa','price_amount']]
     df_conso = df_conso.rename(columns={'month_x': 'month', 'year_x': 'year'})
 
     print("     ~ Get AW")
     l_aw = []
     for i in range(len(df_conso)):
         id_soc = df_conso['society_id'][i]
-        s_aw = df_am.loc[df_am['society_id'] == id_soc, "AW annuel"].values[0]
+        try:
+            s_aw = df_am.loc[df_am['society_id'] == id_soc, "awarde"].values[0]
+        except:
+            s_aw = 0
         l_aw.append(s_aw)
     df_conso['AW annuel'] = l_aw
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(str).str.replace(' ', '')
@@ -254,7 +252,7 @@ def last_conso():
     print("     ~ Merge last_conso with df_conso")
     df_reel = df_reel.fillna(0)
 
-    df_reel = df_reel.groupby(['society_id','name_org',"month",'year','year_month','Inactif','AW annuel']).sum(numeric_only = True).reset_index()
+    df_reel = df_reel.groupby(['society_id','name_org',"month",'year','year_month','AW annuel']).sum(numeric_only = True).reset_index()
     l_last, l_diff = [],[]
     for i in range(len(df_reel)):
         id_soc = df_reel['society_id'][i]
@@ -284,13 +282,13 @@ def update_sheet():
     df_conso['price_amount'] = [(df_conso['price_amount'][i].replace(".", ",")) for i in range(len(df_conso))]
     df_conso['AW annuel'] = [(df_conso['AW annuel'][i].replace(".", ",")) for i in range(len(df_conso))]
 
-    df_reel = df_conso.fillna(0)
-    l_inac = []
-    for v in range(len(df_reel)):
-        id_soc = (df_reel['society_id'][v])
-        s = df_am.loc[df_am['society_id'] == id_soc,"Inactif"].values[0]
-        l_inac.append(s)
-    df_conso['Inactif'] = l_inac
+    # df_reel = df_conso.fillna(0)
+    # l_inac = []
+    # for v in range(len(df_reel)):
+    #     id_soc = (df_reel['society_id'][v])
+    #     s = df_am.loc[df_am['society_id'] == id_soc,"Inactif"].values[0]
+    #     l_inac.append(s)
+    # df_conso['Inactif'] = l_inac
     # df_conso = df_conso[(df_conso['Inactif'] == "Non")|(df_conso['Inactif'] == 0)].reset_index()
 
     df_conso['AW annuel'] = df_conso['AW annuel'].astype(str)
@@ -578,7 +576,7 @@ def get_last_resa():
 
     df = pd.DataFrame(results)
     df.columns = ['society_id', 'latest_reservation_date']
-    df.to_csv('results/last_resa.csv')
+    df.to_csv('results/last_resa2.csv')
 
 def update_last_resa_pipe():
     df = pd.read_csv('results/last_resa2.csv')
@@ -596,14 +594,15 @@ def update_last_resa_pipe():
         try:
             id_pipe = (response['data'][0]['id'])
         except:
-            id_pipe = ""
+            id_pipe = 0
         print(society_id,id_pipe)
         l_id_pipe.append(id_pipe)
 
     df['id_pipe'] = l_id_pipe
 
     ## DELTA RESA VS TODAY
-    df = df[df['id_pipe'] > 0 ]
+    # df = df.fillna(0)
+    df = df[df['id_pipe'] > 0].reset_index()
 
     date_du_jour = datetime.today().date()
 
