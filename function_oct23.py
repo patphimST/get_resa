@@ -1,7 +1,6 @@
 from datetime import datetime, tzinfo, timezone
 from pymongo import MongoClient
 import pymongo
-import time
 import requests
 import config
 import pandas as pd
@@ -24,7 +23,7 @@ def get_conso():
             '$match': {
                 'statusHistory.to': 'confirmed',
                 'createdAt': {
-                    '$gte': datetime(2022, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+                    '$gte': datetime(2022, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
                 }
             }
         }, {
@@ -101,12 +100,12 @@ def get_conso():
     df = df.drop("_id", axis=1)
     df = df.sort_values(by="month_year").reset_index()
     df = df[["society_id","month_year","type","offline",'confirmed_entries','confirmed_price_sum','cancelled_entries','cancelled_price_sum','unique_travelers','last_booking_date_by_type']]
-    df.to_csv("results/extract.csv")
+    df.to_csv("results/conso.csv")
 
 def get_society_data():
     print("########### GET SOCIETY DATA START ###########")
 
-    df = pd.read_csv('results/extract.csv')
+    df = pd.read_csv('results/conso.csv')
     df = df.groupby(['society_id',"type","offline","month_year",'last_booking_date_by_type']).sum(numeric_only = True)
     df = df.sort_values(by=["society_id",'type',"month_year"])
 
@@ -120,9 +119,13 @@ def get_society_data():
     for i in range (len(df_group)):
         id = (df_group['society_id'][i])
         cursor_soc = col_soc.find({"_id" : ObjectId(id)})
+        print(id)
         for c in cursor_soc:
             name=(c['name'])
-            salesName=(c['salesName'])
+            try:
+                salesName=(c['salesName'])
+            except :
+                salesName = ""
             sub_price=(c['sub_price'])
             createdAt =(c['createdAt'])
             l_name.append(name)
@@ -152,10 +155,9 @@ def get_portefeuille():
 
     import requests
 
-    # Remplacez ces valeurs par vos propres informations d'authentification Pipedrive
     FILTER_ID = 1289
 
-    url = f"https://api.pipedrive.com/v1/organizations?filter_id={FILTER_ID}&limit=200&api_token={config.api_pipedrive}"
+    url = f"https://api.pipedrive.com/v1/organizations?filter_id={FILTER_ID}&limit=500&api_token={config.api_pipedrive}"
 
     payload = {}
     headers = {
@@ -172,7 +174,9 @@ def get_portefeuille():
     l_awarde= []
     l_inactif= []
     l_idpipe= []
-
+    l_signa= []
+    l_golive= []
+    l_diff_signa_golive = []
     inac = [("763", "✅New"), ("755", "✅Non"),("746", "✅Ponctuel"), ("747", "🛑Oui"),("749", "🤔 Accès démo"),("750", "🤔Test en cours"), ("748", "🤔Test terminé"),("751", "1️⃣ Only one shot")]
 
     for i in response:
@@ -181,9 +185,22 @@ def get_portefeuille():
         id_soc = (i['9d0760fac9b60ea2d3f590d3146d758735f2896d'])
         awarde = (i['446585f9020fe3190ca0fa5ef53fc429ef4b4441'])
         inactif = (i['a056613671b057f83980e4fd4bb6003ce511ca3d'])
+        signature = (i['af6c7d5ca6bec13a3a2ac0ffe4f05ed98907c412'])
+        golive = (i['24582ea974bfcb46c1985c3350d33acab5e54246'])
+
+        if golive is not None and signature is not None:
+            golive_date = datetime.strptime(golive, '%Y-%m-%d')
+            signature_date = datetime.strptime(signature, '%Y-%m-%d')
+            diff_signa_golive = golive_date - signature_date
+            diff_signa_golive = diff_signa_golive.days
+            print(diff_signa_golive)
+        else:
+            diff_signa_golive = ""
+            print("Error: golive or signature is None")
         for a,b in inac :
             if inactif == a:
                 inactif = b
+
         owner = (i['owner_id']['name'])
         name = (i['name'])
         l_society_id.append(id_soc)
@@ -192,8 +209,11 @@ def get_portefeuille():
         l_awarde.append(awarde)
         l_owner.append(owner)
         l_inactif.append(inactif)
-    df = pd.DataFrame({'society_id': l_society_id, 'name_org': l_name,'id_pipe':l_idpipe, 'awarde': l_awarde,'owner': l_owner,"inactif" : l_inactif,})
-
+        l_signa.append(signature)
+        l_golive.append(golive)
+        l_diff_signa_golive.append(diff_signa_golive)
+    df = pd.DataFrame({'society_id': l_society_id, 'name_org': l_name,'id_pipe':l_idpipe, 'awarde': l_awarde,'owner': l_owner,"inactif" : l_inactif,'signature': l_signa,"golive" : l_golive,'diff_golive' : l_diff_signa_golive})
+    df.to_csv("results/pipe2.csv")
     df2 = pd.read_csv('results/extract_group.csv')
 
     merged_df = pd.merge(df, df2, on='society_id')
@@ -246,27 +266,6 @@ def clean_conso_with_actif():
     df1b = df1b.reset_index(drop=True)
     df1b.to_csv("results/conso_actif_not_found.csv")
 
-def update_sheet():
-    print("########### GET UPDATE SHEET START ###########")
-
-    df_conso = pd.read_csv("results/conso_actif.csv")
-    df_pipe = pd.read_csv("results/pipe.csv")
-    df_conso_out = pd.read_csv("results/conso_actif_not_found.csv")
-
-
-    from oauth2client.service_account import ServiceAccountCredentials
-    import gspread
-    from gspread_pandas import Spread
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file",'https://spreadsheets.google.com/feeds',"https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("creds/creds_sheet.json", scope)
-
-    # client = gspread.authorize(creds)
-
-    s = Spread('Conso_since_2021')
-    s.df_to_sheet(df_conso, sheet='conso_actif', start='A1',replace=True)
-    s.df_to_sheet(df_pipe, sheet='pipe', start='A1',replace=True)
-    s.df_to_sheet(df_conso_out, sheet='actif_notFound', start='A1',replace=True)
-
 def update_last_resa_pipe():
     print("########### GET LAST RESA START ###########")
 
@@ -277,12 +276,16 @@ def update_last_resa_pipe():
     for i in range(len(df)):
         id_pipe = int(df['id_pipe'][i])
         autre_date = (df['last_resa'][i])
+        print(autre_date)
         format_str = "%Y-%m-%d %H:%M:%S.%f"
         format_str2 = "%Y-%m-%dT%H:%M:%S.%fZ"
+        format_str3 = "%Y-%m-%d %H:%M:%S"
         try:
             autre_date = datetime.strptime(autre_date, format_str)
         except:
-            autre_date = datetime.strptime(autre_date, format_str2)
+            try:
+                autre_date = datetime.strptime(autre_date, format_str2)
+            except: autre_date = datetime.strptime(autre_date, format_str3)
         autre_date = datetime.date(autre_date)
         difference_en_jours = (date_du_jour - autre_date).days
         l_warning.append(difference_en_jours)
@@ -312,3 +315,76 @@ def update_last_resa_pipe():
 
     df['warning_conso'] = l_warning
     df.to_csv('results/pipe.csv')
+
+def get_users_actif():
+    result = col_it.aggregate([
+        {
+            '$unwind': '$travelers'
+        }, {
+            '$group': {
+                '_id': {
+                    'society_id': '$society._id',
+                    'email': '$travelers.email'
+                },
+                'firstCreatedAt': {
+                    '$first': '$createdAt'
+                }
+            }
+        }, {
+            '$group': {
+                '_id': {
+                    'society_id': '$_id.society_id',
+                    'month_year': {
+                        '$dateToString': {
+                            'format': '%Y-%m',
+                            'date': '$firstCreatedAt'
+                        }
+                    }
+                },
+                'uniqueTravelersCount': {
+                    '$sum': 1
+                }
+            }
+        }, {
+            '$project': {
+                '_id': 0,
+                'society_id': '$_id.society_id',
+                'month_year': '$_id.month_year',
+                'uniqueTravelersCount': 1
+            }
+        }
+    ])
+    df = pd.DataFrame(result)
+    df.to_csv("results/users_actif.csv")
+
+def update_sheet():
+    print("########### GET UPDATE SHEET START ###########")
+
+    df_conso = pd.read_csv("results/conso_actif.csv")
+    df_pipe = pd.read_csv("results/pipe.csv")
+    df_conso_out = pd.read_csv("results/conso_actif_not_found.csv")
+    df_actif = pd.read_csv("results/users_actif.csv")
+
+    # df_conso['total_billed'] = pd.to_numeric(df_conso['total_billed'], errors='coerce').astype(float)
+    df_conso['total_billed'] = df_conso['total_billed'].replace('.',',')
+    df_conso['month_year'] = pd.to_datetime(df_conso['month_year'], format='%Y-%m')
+
+    # df_conso['total_billed'] = pd.to_numeric(df_conso['total_billed'], errors='coerce').astype(float)
+
+    df_conso.to_csv("results/conso_actif.csv")
+    df_conso = pd.read_csv("results/conso_actif.csv")
+
+
+    from oauth2client.service_account import ServiceAccountCredentials
+    from gspread_pandas import Spread
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file",'https://spreadsheets.google.com/feeds',"https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("creds/creds_sheet.json", scope)
+
+    # client = gspread.authorize(creds)
+
+    s = Spread('Conso_since_2021')
+
+    s.df_to_sheet(df_conso, sheet='conso_actif', start='A1',replace=True)
+    s.df_to_sheet(df_pipe, sheet='pipe', start='A1',replace=True)
+    s.df_to_sheet(df_conso_out, sheet='actif_notFound', start='A1',replace=True)
+    s.df_to_sheet(df_actif, sheet='users_actif', start='A1',replace=True)
